@@ -6,24 +6,45 @@ import (
 	"os/exec"
 )
 
-func Template(chartPath string, values []string) ([]byte, error) {
-	args := []string{"template", "release", chartPath}
+type TemplateParams struct {
+	ChartPath string
+	Release   string
+	Namespace string
+	Values    []string
+	Set       []string
+}
 
-	for _, v := range values {
-		args = append(args, "-f", v)
+func Template(p TemplateParams) ([]byte, error) {
+	if p.Release == "" {
+		p.Release = "release"
+	}
+
+	args := []string{"template", p.Release, p.ChartPath}
+
+	if p.Namespace != "" {
+		args = append(args, "--namespace", p.Namespace)
+	}
+
+	for _, vf := range p.Values {
+		args = append(args, "-f", vf)
+	}
+
+	for _, s := range p.Set {
+		args = append(args, "--set", s)
 	}
 
 	cmd := exec.Command("helm", args...)
 
 	var out bytes.Buffer
-	var stderr bytes.Buffer
-
+	var errBuf bytes.Buffer
 	cmd.Stdout = &out
-	cmd.Stderr = &stderr
+	cmd.Stderr = &errBuf
 
-	err := cmd.Run()
-	if err != nil {
-		return nil, fmt.Errorf("helm template failed: %s", stderr.String())
+	if err := cmd.Run(); err != nil {
+		if errBuf.Len() > 0 {
+			return nil, fmt.Errorf("helm template failed: %s", errBuf.String())
+		}
+		return nil, fmt.Errorf("helm template failed: %w", err)
 	}
 
 	return out.Bytes(), nil
