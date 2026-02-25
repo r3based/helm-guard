@@ -2,29 +2,38 @@ package kube
 
 import (
 	"bytes"
+	"io"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/yaml"
 )
 
-func ParseManifests(data []byte) ([]unstructured.Unstructured, error) {
-	decoder := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(data), 4096)
+func ParseManifests(rendered []byte) ([]unstructured.Unstructured, error) {
+	dec := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(rendered), 4096)
 
-	var objects []unstructured.Unstructured
+	var objs []unstructured.Unstructured
 
 	for {
-		var obj unstructured.Unstructured
-		err := decoder.Decode(&obj)
-		if err != nil {
+		var u unstructured.Unstructured
+		err := dec.Decode(&u)
+		if err == io.EOF {
 			break
 		}
+		if err != nil {
+			return nil, err
+		}
 
-		if obj.Object == nil {
+		// skip empty docs
+		if u.Object == nil || len(u.Object) == 0 {
+			continue
+		}
+		// some docs may still lack kind/apiVersion; skip them
+		if u.GetKind() == "" {
 			continue
 		}
 
-		objects = append(objects, obj)
+		objs = append(objs, u)
 	}
 
-	return objects, nil
+	return objs, nil
 }
