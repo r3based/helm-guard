@@ -5,6 +5,7 @@ import "k8s.io/apimachinery/pkg/api/resource"
 type Model struct {
 	Workloads []Workload
 	Services  []Service
+	Ingresses []Ingress
 	Summary   Summary
 }
 
@@ -13,7 +14,15 @@ type Workload struct {
 	Name       string
 	Namespace  string
 	Replicas   int64
+	PodLabels  map[string]string
 	Containers []Container
+}
+
+type Ingress struct {
+	Name      string
+	Namespace string
+	Hosts     []string
+	Services  []string // backend service names
 }
 
 type Container struct {
@@ -31,6 +40,7 @@ type Service struct {
 	Name      string
 	Namespace string
 	Type      string
+	Selector  map[string]string
 	Ports     []ServicePort
 }
 

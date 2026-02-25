@@ -1,16 +1,17 @@
 package cli
 
 import (
-	"fmt"
-	"sort"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
-	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/r3based/helm-guard/internal/helm"
 	"github.com/r3based/helm-guard/internal/kube"
 	"github.com/r3based/helm-guard/internal/model"
+	"github.com/r3based/helm-guard/internal/report"
+	"github.com/r3based/helm-guard/internal/rules"
+	"github.com/r3based/helm-guard/internal/rules/builtin"
 )
 
 var (
@@ -18,6 +19,9 @@ var (
 	setValues   []string
 	namespace   string
 	releaseName string
+
+	failOn  string
+	disable []string
 )
 
 var analyzeCmd = &cobra.Command{
@@ -45,78 +49,25 @@ var analyzeCmd = &cobra.Command{
 
 		m := model.Build(objs)
 
-		fmt.Printf("Rendered objects: %d\n\n", len(objs))
-
-		sort.Slice(m.Workloads, func(i, j int) bool {
-			a, b := m.Workloads[i], m.Workloads[j]
-			if a.Kind != b.Kind {
-				return a.Kind < b.Kind
-			}
-			if a.Namespace != b.Namespace {
-				return a.Namespace < b.Namespace
-			}
-			return a.Name < b.Name
-		})
-
-		fmt.Println("Workloads:")
-		if len(m.Workloads) == 0 {
-			fmt.Println("- (none)")
-		}
-		for _, w := range m.Workloads {
-			fmt.Printf("- %s/%s (%s) replicas=%d\n", w.Namespace, w.Name, w.Kind, w.Replicas)
-			if len(w.Containers) == 0 {
-				fmt.Println("  - (no containers)")
-				continue
-			}
-			for _, c := range w.Containers {
-				fmt.Printf(
-					"  - %s image=%s cpu=%s/%s mem=%s/%s probes=R:%s L:%s\n",
-					emptyIf(c.Name, "?"),
-					emptyIf(c.Image, "?"),
-					qStrQ(c.CPURequest), qStrQ(c.CPULimit),
-					qStrQ(c.MemRequest), qStrQ(c.MemLimit),
-					yn(c.HasReadiness), yn(c.HasLiveness),
-				)
-			}
-		}
-
-		fmt.Println()
-
-		sort.Slice(m.Services, func(i, j int) bool {
-			a, b := m.Services[i], m.Services[j]
-			if a.Namespace != b.Namespace {
-				return a.Namespace < b.Namespace
-			}
-			return a.Name < b.Name
-		})
-
-		fmt.Println("Services:")
-		if len(m.Services) == 0 {
-			fmt.Println("- (none)")
-		}
-		for _, s := range m.Services {
-			ps := make([]string, 0, len(s.Ports))
-			for _, p := range s.Ports {
-				tp := p.TargetPort
-				if tp == "" {
-					tp = "-"
+		disableIDs := map[string]bool{}
+		for _, x := range disable {
+			for _, id := range strings.Split(x, ",") {
+				id = strings.TrimSpace(id)
+				if id != "" {
+					disableIDs[id] = true
 				}
-				prefix := ""
-				if p.Name != "" {
-					prefix = p.Name + ":"
-				}
-				ps = append(ps, fmt.Sprintf("%s%d->%s/%s", prefix, p.Port, tp, p.Protocol))
 			}
-			fmt.Printf("- %s/%s type=%s ports=[%s]\n", s.Namespace, s.Name, s.Type, strings.Join(ps, ", "))
 		}
 
-		fmt.Println()
-		fmt.Println("Summary:")
-		fmt.Printf("- total cpu requests: %s\n", m.Summary.CPURequests.String())
-		fmt.Printf("- total cpu limits:   %s\n", m.Summary.CPULimits.String())
-		fmt.Printf("- total mem requests: %s\n", m.Summary.MemRequests.String())
-		fmt.Printf("- total mem limits:   %s\n", m.Summary.MemLimits.String())
+		engine := rules.New(builtin.All(), rules.Options{DisableIDs: disableIDs})
+		findings := engine.Run(m)
 
+		report.Pretty(os.Stdout, len(objs), m, findings)
+
+		failSeverity := parseFailOn(failOn)
+		if failSeverity >= 0 {
+			os.Exit(rules.ExitCode(findings, failSeverity))
+		}
 		return nil
 	},
 }
@@ -126,25 +77,26 @@ func init() {
 	analyzeCmd.Flags().StringArrayVar(&setValues, "set", nil, "Set values (key=val)")
 	analyzeCmd.Flags().StringVar(&namespace, "namespace", "", "Namespace")
 	analyzeCmd.Flags().StringVar(&releaseName, "release", "release", "Release name")
+
+	analyzeCmd.Flags().StringVar(&failOn, "fail-on", "off", "Fail on severity: off|cosmetic|low|medium|high|critical")
+	analyzeCmd.Flags().StringArrayVar(&disable, "disable", nil, "Disable rule IDs (comma-separated)")
 }
 
-func qStrQ(q *resource.Quantity) string {
-	if q == nil {
-		return "-"
+func parseFailOn(s string) rules.Severity {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "off", "":
+		return -1
+	case "cosmetic":
+		return rules.Cosmetic
+	case "low":
+		return rules.Low
+	case "medium":
+		return rules.Medium
+	case "high":
+		return rules.High
+	case "critical":
+		return rules.Critical
+	default:
+		return -1
 	}
-	return q.String()
-}
-
-func yn(b bool) string {
-	if b {
-		return "Y"
-	}
-	return "N"
-}
-
-func emptyIf(s, fallback string) string {
-	if strings.TrimSpace(s) == "" {
-		return fallback
-	}
-	return s
 }

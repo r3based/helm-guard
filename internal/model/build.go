@@ -26,6 +26,9 @@ func Build(objs []unstructured.Unstructured) Model {
 		case "Service":
 			s := buildService(o)
 			m.Services = append(m.Services, s)
+		case "Ingress":
+			i := buildIngress(o)
+			m.Ingresses = append(m.Ingresses, i)
 		}
 	}
 
@@ -43,7 +46,23 @@ func buildWorkload(o unstructured.Unstructured) Workload {
 		replicas = v
 	}
 
-	containersAny, _, _ := unstructured.NestedSlice(o.Object, "spec", "template", "spec", "containers")
+	// --- Pod template labels ---
+	labelMap, _, _ := unstructured.NestedStringMap(
+		o.Object,
+		"spec", "template", "metadata", "labels",
+	)
+
+	podLabels := map[string]string{}
+	for k, v := range labelMap {
+		podLabels[k] = v
+	}
+
+	// --- Containers ---
+	containersAny, _, _ := unstructured.NestedSlice(
+		o.Object,
+		"spec", "template", "spec", "containers",
+	)
+
 	containers := make([]Container, 0, len(containersAny))
 
 	for _, cAny := range containersAny {
@@ -85,6 +104,7 @@ func buildWorkload(o unstructured.Unstructured) Workload {
 		Name:       o.GetName(),
 		Namespace:  ns,
 		Replicas:   replicas,
+		PodLabels:  podLabels,
 		Containers: containers,
 	}
 }
@@ -100,6 +120,14 @@ func buildService(o unstructured.Unstructured) Service {
 		typ = "ClusterIP"
 	}
 
+	// --- Selector ---
+	selectorMap, _, _ := unstructured.NestedStringMap(o.Object, "spec", "selector")
+	selector := map[string]string{}
+	for k, v := range selectorMap {
+		selector[k] = v
+	}
+
+	// --- Ports ---
 	portsAny, _, _ := unstructured.NestedSlice(o.Object, "spec", "ports")
 	ports := make([]ServicePort, 0, len(portsAny))
 
@@ -136,7 +164,61 @@ func buildService(o unstructured.Unstructured) Service {
 		Name:      o.GetName(),
 		Namespace: ns,
 		Type:      typ,
+		Selector:  selector,
 		Ports:     ports,
+	}
+}
+
+func buildIngress(o unstructured.Unstructured) Ingress {
+	ns := o.GetNamespace()
+	if ns == "" {
+		ns = "default"
+	}
+
+	var hosts []string
+	var services []string
+
+	rulesAny, _, _ := unstructured.NestedSlice(o.Object, "spec", "rules")
+
+	for _, rAny := range rulesAny {
+		rMap, ok := rAny.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		host, _, _ := unstructured.NestedString(rMap, "host")
+		if host != "" {
+			hosts = append(hosts, host)
+		}
+
+		pathsAny, _, _ := unstructured.NestedSlice(rMap, "http", "paths")
+		for _, pAny := range pathsAny {
+			pMap, ok := pAny.(map[string]any)
+			if !ok {
+				continue
+			}
+
+			// networking.k8s.io/v1
+			svcName, _, _ := unstructured.NestedString(pMap, "backend", "service", "name")
+			if svcName != "" {
+				services = append(services, svcName)
+			}
+
+			// legacy fallback
+			if svcName == "" {
+				svcName, _, _ = unstructured.NestedString(pMap, "backend", "serviceName")
+				if svcName != "" {
+					services = append(services, svcName)
+				}
+			}
+		}
+	}
+
+	return Ingress{
+		Name:      o.GetName(),
+		Namespace: ns,
+		Hosts:     hosts,
+		Services:  services,
 	}
 }
 
