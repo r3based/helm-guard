@@ -7,7 +7,8 @@ import (
 )
 
 type Options struct {
-	DisableIDs map[string]bool
+	DisableIDs       map[string]bool
+	SeverityOverride map[string]Severity
 }
 
 type Engine struct {
@@ -37,6 +38,11 @@ func (e *Engine) Run(m model.Model) []Finding {
 			}
 			if findings[i].Severity == 0 && r.Severity() != 0 {
 				findings[i].Severity = r.Severity()
+			}
+			if e.opts.SeverityOverride != nil {
+				if sev, ok := e.opts.SeverityOverride[r.ID()]; ok {
+					findings[i].Severity = sev
+				}
 			}
 			if findings[i].Remediation == "" {
 				findings[i].Remediation = r.Remediation()
